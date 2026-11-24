@@ -4,7 +4,7 @@ FastAPI 提供字典标签树和别名映射的读取接口。PostgreSQL 保存�
 
 ## 本地运行
 
-准备 Python 3.11+、PostgreSQL 16 和 Redis 7。验收使用专用数据库和 Redis 实例。以下示例使用 Bash，替换主机、端口和专用数据库连接信息。
+准备 Python 3.11+、PostgreSQL 16 和 Redis 7。依赖安装与全量集成测试已经在 Windows CPython 3.11.18 和 3.14.3 上验证。以下示例使用 Bash，请提供专用数据库和 Redis 实例的连接信息。
 
 ```bash
 python -m venv .venv
@@ -18,7 +18,7 @@ python -m pytest -v --no-header
 python -m bench.hit_rate
 ```
 
-安装 PostgreSQL 的本地驱动和服务后，请先创建 `taxonomy` 数据库及可执行迁移的角色。`DATABASE_URL` 接受 PostgreSQL 的 `postgresql+psycopg` SQLAlchemy URL。`REDIS_URL` 接受 `redis://` 和 `rediss://`。接入时由 S2-INFRA 注入这些环境变量。
+安装 PostgreSQL 服务后，请先创建 `taxonomy` 数据库及可执行迁移、创建测试专用 schema 的角色。`DATABASE_URL` 接受 PostgreSQL 的 `postgresql+psycopg` SQLAlchemy URL。`REDIS_URL` 接受 `redis://` 和 `rediss://`。接入时由 S2-INFRA 注入这些环境变量。
 
 运行 `TAXONOMY_DEMO_MODE=true python -m app` 可启动本地接口，监听 `127.0.0.1:8000`。测试和压测自行创建并清理虚构字典。手工调用前可在本地创建样例字典及标签，或使用现有集成环境的字典。
 
@@ -33,10 +33,10 @@ python -m bench.hit_rate
 
 | 数据 | 键 |
 | --- | --- |
-| 标签树 | `taxonomy:{org_id}:{dict_id}:v{version}:tree` |
-| 别名映射 | `taxonomy:{org_id}:{dict_id}:v{version}:alias` |
+| 标签树 | `taxonomy:{org_id}:{dict_id}:g{generation}:v{version}:tree` |
+| 别名映射 | `taxonomy:{org_id}:{dict_id}:g{generation}:v{version}:alias` |
 
-`dict_id` 使用全局唯一的 UUID。命中前从 PostgreSQL 按调用者的 `org_id`、`site_id` 检查字典和版本。版本从 `1` 开始；键内的数据封装含字典 UUID、版本和结构化快照。写入时设置 TTL，命中时保留原过期时间。旧键保留原 TTL 自然过期。
+`dict_id` 是全局唯一的 UUID，`generation` 是 PostgreSQL 为该字典分配的缓存代次 UUID。命中前按调用者的 `org_id`、`site_id` 从 PostgreSQL 读取代次及版本，版本从 `1` 开始。缓存值封装含字典 UUID、版本和结构化快照。写入时设置 TTL，命中时保留原过期时间。旧代次或旧版本的键按原 TTL 自然过期。
 
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ python -m bench.hit_rate
 | `TAXONOMY_CACHE_TIMEOUT_MS` | `200` | 每次 Redis GET 或 SET 的等待上限，范围 `1–60000` 毫秒 |
 | `TAXONOMY_DEMO_MODE` | `false` | 本地演示时从 `X-Org-ID`、`X-Site-ID` 取作用域 |
 
-Redis GET 因连接、超时或无效内容失败时，响应使用当前事务的 PostgreSQL 数据。正常未命中时写入缓存。Redis SET 失败时仍返回已查询的数据。每个应用实例对同一原因每分钟最多记录一条 WARNING。在后续请求中自动尝试 Redis，因此连接恢复后自动恢复缓存使用。数据库故障由 API 宿主的常规错误处理接管。
+Redis GET 因连接、超时或无效内容失败时，响应使用当前事务的 PostgreSQL 数据。树快照的根和每层子节点都必须存在于 `nodes` 中，悬空引用按无效内容处理。正常未命中时写入缓存。Redis SET 失败时仍返回已查询的数据。每个应用实例对同一原因每分钟最多记录一条 WARNING。在后续请求中自动尝试 Redis，因此连接恢复后自动恢复缓存使用。数据库故障由 API 宿主的常规错误处理接管。
 
 ## 失效与集成
 
@@ -54,7 +54,13 @@ Redis GET 因连接、超时或无效内容失败时，响应使用当前事务�
 
 读请求使用 PostgreSQL `REPEATABLE READ`，确保缓存未命中时版本和标签行来自同一快照。读请求跨越并发提交时仍按它读取到的版本处理。提交后开始的新请求读取新版本。数据库读取使用主库，避免复制延迟改变上述保证。
 
-本地迁移 `0001_standalone_schema` 提供独立的字典与标签表，`0002_dictionary_version` 添加计数列并将存量记录初始化为 `1`。正式接入时将第二个迁移接到项目已有的字典表迁移链，并将仓库中的模型映射到正式表。由认证中间件将经过验证的 `Scope` 写入 `request.state.taxonomy_scope`，默认配置下缺少该作用域时返回 403。S2-INFRA 提供连接配置、Redis 实例、日志采集和 CI 依赖服务。日志以 `app.taxonomy.cache` 为记录器，便于采集告警。
+本地迁移 `0001_standalone_schema` 提供独立字典与标签表。`0002_dictionary_version` 添加计数列并将存量记录初始化为 `1`。`0003_cache_generation` 为存量字典和以后新建的字典生成代次。正式接入时将后两个迁移接入已有字典表的迁移链，并映射到正式表。
+
+### 迁移往返
+
+停用使用当前表结构的应用进程，执行 `python -m alembic downgrade 0002_dictionary_version` 回退代次列，或执行 `python -m alembic downgrade 0001_standalone_schema` 同时回退数字版本列。需要在 `0002` 运行旧版应用时，为旧版设置指向独立空 Redis 实例或逻辑库的 `REDIS_URL`。执行 `python -m alembic upgrade head` 再启动当前应用。重新添加代次列时 PostgreSQL 为每条存量字典重新生成 UUID，即使数字版本回到 `1`，新请求也只按新代次读写。当前应用可继续使用原 Redis，旧键保留原 TTL。往返回归在独立 schema 中改动标签与别名，验证升级后两个接口均返回新值。
+
+由认证中间件将经过验证的 `Scope` 写入 `request.state.taxonomy_scope`，默认配置下缺少该作用域时返回 403。S2-INFRA 提供连接配置、Redis 实例、日志采集和 CI 依赖服务。日志以 `app.taxonomy.cache` 为记录器，便于采集告警。
 
 ## 验证材料
 

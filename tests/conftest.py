@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID, uuid4
@@ -20,6 +19,7 @@ from app.taxonomy.schema import Scope
 class Example:
     scope: Scope
     dictionary_id: UUID
+    generation: UUID
     source: UUID
     target: UUID
     child: UUID
@@ -34,14 +34,11 @@ class Example:
         return f"/taxonomy/dictionaries/{self.dictionary_id}"
 
     def key(self, version, part):
-        return f"taxonomy:{self.scope.org_id}:{self.dictionary_id}:v{version}:{part}"
+        return f"taxonomy:{self.scope.org_id}:{self.dictionary_id}:g{self.generation}:v{version}:{part}"
 
 
-@pytest.fixture(scope="session")
-def event_loop_policy():
-    if sys.platform == "win32":
-        return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.DefaultEventLoopPolicy()
+def pytest_asyncio_loop_factories():
+    return {"selector": asyncio.SelectorEventLoop}
 
 
 @pytest.fixture
@@ -70,7 +67,7 @@ async def redis_instance(settings):
 
 @pytest.fixture
 async def example(engine, redis_instance):
-    sample = Example(Scope(uuid4(), uuid4()), uuid4(), uuid4(), uuid4(), uuid4(), uuid4())
+    sample = Example(Scope(uuid4(), uuid4()), uuid4(), uuid4(), uuid4(), uuid4(), uuid4(), uuid4())
     scope_values = dict(org_id=sample.scope.org_id, site_id=sample.scope.site_id, created_by=uuid4())
     rows = [
         dict(id=sample.source, code="a", label="样例甲", status="active", parent_id=None, aliases=["甲"]),
@@ -79,7 +76,9 @@ async def example(engine, redis_instance):
         dict(id=sample.third, code="d", label="样例丙", status="active", parent_id=None, aliases=["丙"]),
     ]
     async with engine.begin() as conn:
-        await conn.execute(insert(dictionary).values(id=sample.dictionary_id, **scope_values))
+        await conn.execute(insert(dictionary).values(
+            id=sample.dictionary_id, cache_generation=sample.generation, **scope_values,
+        ))
         await conn.execute(insert(tag), [dict(dictionary_id=sample.dictionary_id, **scope_values, **row) for row in rows])
     try:
         yield sample

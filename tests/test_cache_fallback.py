@@ -122,6 +122,29 @@ async def test_corrupt_values_fall_back_without_overwriting(corruption, running,
     assert "GET failed (invalid value)" in caplog.text
 
 
+@pytest.mark.parametrize("broken_reference", ["root", "grandchild"])
+async def test_dangling_tree_references_log_and_return_database_tree(
+    broken_reference, running, redis_instance, example, caplog,
+):
+    client, _ = running
+    expected = await read(client, example)
+    root, child, missing = [str(uuid4()) for _ in range(3)]
+    cached_node = {"code": "cached", "label": "缓存样例", "status": "active"}
+    broken_tree = {"roots": [missing], "nodes": {}}
+    if broken_reference == "grandchild":
+        broken_tree = {"roots": [root], "nodes": {
+            root: {**cached_node, "children": [child]},
+            child: {**cached_node, "children": [missing]},
+        }}
+    key = example.key(1, "tree")
+    payload = json.dumps({"version": 1, "dictionary_id": str(example.dictionary_id), "data": broken_tree})
+    await redis_instance.set(key, payload, ex=30)
+    assert (await read(client, example)) == expected
+    assert expected["nodes"][str(example.source)]["label"] == "样例甲"
+    assert await redis_instance.get(key) == payload.encode()
+    assert "GET failed (invalid value)" in caplog.text
+
+
 async def test_invalid_utf8_with_redis_response_decoding(settings, example, redis_instance, caplog):
     key = example.key(1, "tree")
     await redis_instance.set(key, b"\xff", ex=30)

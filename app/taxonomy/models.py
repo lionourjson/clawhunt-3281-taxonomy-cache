@@ -22,6 +22,7 @@ def standard_columns():
 dictionary = Table(
     "dictionary", metadata, *standard_columns(),
     Column("version", BigInteger, nullable=False, server_default=text("1")),
+    Column("cache_generation", Uuid, nullable=False, server_default=func.gen_random_uuid()),
     CheckConstraint("version >= 1", name="ck_dictionary_version"),
     UniqueConstraint("id", "org_id", "site_id", name="uq_dictionary_scope"),
 )

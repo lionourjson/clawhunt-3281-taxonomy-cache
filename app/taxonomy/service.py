@@ -109,10 +109,16 @@ class TaxonomyService:
 
     async def read(self, scope: Scope, dictionary_id: UUID, kind: Kind) -> TagTree | AliasMap:
         model, project = (TagTree, tree_snapshot) if kind == "tree" else (AliasMap, alias_snapshot)
-        # Version and payload must come from the same PostgreSQL snapshot, even on a miss.
+        # Cache identity and payload must come from the same PostgreSQL snapshot.
         async with self.snapshot_engine.begin() as conn:
-            version = await dictionary_version(conn, scope, dictionary_id)
-            key = cache_key(scope.org_id, dictionary_id, version, kind)
+            identity = (await conn.execute(
+                select(dictionary.c.cache_generation, dictionary.c.version)
+                .where(*dictionary_filter(scope, dictionary_id)),
+            )).one_or_none()
+            if identity is None:
+                raise DictionaryNotFound(dictionary_id)
+            generation, version = identity
+            key = cache_key(scope.org_id, dictionary_id, generation, version, kind)
             lookup = await self.cache.get(key, model, dictionary_id, version)
             if lookup.data is not None:
                 return lookup.data

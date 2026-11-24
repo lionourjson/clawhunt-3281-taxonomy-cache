@@ -16,8 +16,8 @@ from app.taxonomy.schema import CachedSnapshot, Kind, Snapshot
 logger = logging.getLogger(__name__)
 
 
-def cache_key(org_id: UUID, dictionary_id: UUID, version: int, kind: Kind) -> str:
-    return f"taxonomy:{org_id}:{dictionary_id}:v{version}:{kind}"
+def cache_key(org_id: UUID, dictionary_id: UUID, generation: UUID, version: int, kind: Kind) -> str:
+    return f"taxonomy:{org_id}:{dictionary_id}:g{generation}:v{version}:{kind}"
 
 
 def redis_client(settings: Settings) -> Redis:

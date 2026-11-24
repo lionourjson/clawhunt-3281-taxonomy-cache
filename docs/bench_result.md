@@ -9,10 +9,10 @@
 ## 原始输出
 
 ```text
-OS=Windows 11 Python=3.12.14
+OS=Windows 11 Python=3.14.3
 PostgreSQL=16.10 Redis=7.0.15
 dictionaries=12 tags_per_dictionary=48 cycles=3 rounds_per_cycle=20
 concurrent_reads_per_round=24 writes=24 http_2xx=1440
 redis_hits=1368 redis_misses=72 hit_rate=95.00%
-elapsed_seconds=14.897 reads_per_second=96.66 p50_ms=192.98 p95_ms=266.59
+elapsed_seconds=14.945 reads_per_second=96.35 p50_ms=191.14 p95_ms=273.56
 ```
